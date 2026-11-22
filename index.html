@@ -11,13 +11,22 @@
 *{box-sizing:border-box;margin:0}
 body{background:var(--bg);color:var(--text);font-family:Sora,system-ui,sans-serif;min-height:100vh;overflow-x:hidden;
   padding:max(24px,env(safe-area-inset-top)) clamp(16px,4vw,56px) 40px}
+.bg{position:fixed;inset:0;z-index:0;background-size:cover;background-repeat:no-repeat;background-position:center}
+.shade{position:fixed;inset:0;z-index:0;background:linear-gradient(rgba(6,9,18,var(--ov,.55)),rgba(6,9,18,calc(var(--ov,.55) + .25)))}
 .earth{position:fixed;right:-18vmin;bottom:-30vmin;width:60vmin;height:60vmin;border-radius:50%;z-index:0;
   background:radial-gradient(circle at 30% 30%,#7fb0ff,#2f5fd0 45%,#0b1f55 75%);box-shadow:0 0 90px 10px #3d7bff44;animation:rise 4s ease-out both}
 @keyframes rise{from{transform:translateY(45vmin)}to{transform:none}}
 main{position:relative;z-index:1;max-width:980px}
-h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:-.02em}
-.sub{color:var(--dim);margin:8px 0 6px;max-width:60ch;line-height:1.5}
-#status{font-size:13px;color:var(--dim);margin-bottom:24px}
+header{display:flex;justify-content:space-between;align-items:flex-start;gap:20px;flex-wrap:wrap}
+.clock{text-align:right;background:rgba(14,20,36,.8);border:1px solid var(--line);border-radius:14px;padding:12px 22px;min-width:200px;margin-left:auto}
+.time{font-size:clamp(36px,7vw,76px);font-weight:800;font-variant-numeric:tabular-nums;line-height:1}
+.tlabel{font-size:12px;color:var(--dim);letter-spacing:.08em;text-transform:uppercase;margin-top:6px}
+.clock.warn .time{color:var(--sun)}.clock.crit .time{color:#ff5d5d;animation:pulse 1s infinite}.clock.over .time{color:#ff5d5d}
+@keyframes pulse{50%{opacity:.45}}
+#hostmsg{font-size:13px;color:var(--sun);margin-bottom:8px}
+h1{text-shadow:0 2px 18px #000a;font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:-.02em}
+.sub{text-shadow:0 1px 8px #000;color:#c3cbe0;margin:8px 0 6px;max-width:60ch;line-height:1.5}
+#status{text-shadow:0 1px 6px #000;font-size:13px;color:var(--dim);margin-bottom:24px}
 .board{position:relative}
 .row{position:absolute;left:0;right:0;height:64px;display:grid;grid-template-columns:44px minmax(90px,1.2fr) 4fr 84px;align-items:center;gap:14px;
   padding:0 16px;background:rgba(14,20,36,.88);border:1px solid var(--line);border-radius:10px;
@@ -42,21 +51,48 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:-.02em}
 </style>
 </head>
 <body>
-<div class="earth" aria-hidden="true"></div>
+<div class="bg" id="bg"></div>
+<div class="shade"></div>
+<div class="earth" id="earth" hidden aria-hidden="true"></div>
 <div class="banner" id="banner"></div>
 <main>
-  <h1>Image Doctor: recovery board</h1>
-  <p class="sub">Four damaged space photos, one score per patient out of 100. Teams are ranked by their best score on each patient, added together (400 max).</p>
+  <header>
+    <div>
+      <h1 id="title"></h1>
+      <p class="sub">Four damaged space photos, one score per patient out of 100. Teams are ranked by their best score on each patient, added together (400 max). Submissions close when the clock hits zero.</p>
+    </div>
+    <div class="clock" id="clock"><div class="time" id="time">--:--</div><div class="tlabel" id="tlabel">Waiting for the host</div></div>
+  </header>
+  <div id="hostmsg"></div>
   <div id="status">Connecting…</div>
   <div class="board" id="board"></div>
   <div class="empty" id="empty" hidden>No scores yet. Fix a patient image, then run submitScore to appear here.</div>
 </main>
 <script>
-const API = 'https://script.google.com/macros/s/AKfycbwieNmto7ygBAsCiUxy28bgUJXK2uIYB1fKruyBGpx9KcyKbmfKRy2qK1IO_cN6aIpNVA/exec';   // Apps Script web app URL (ends in /exec)
-const N = 4, ROW = 76, DEMO = API.startsWith('PASTE') || location.search.includes('demo');
+/* ===== SETTINGS: change these, commit, refresh ===== */
+const API          = 'https://script.google.com/macros/s/AKfycbwieNmto7ygBAsCiUxy28bgUJXK2uIYB1fKruyBGpx9KcyKbmfKRy2qK1IO_cN6aIpNVA/exec';   // Apps Script web app URL (ends in /exec)
+const DURATION_MIN = 2;                  // length of the game in minutes
+const TITLE        = 'Operation Clear Vision';
+const BACKGROUND   = 'background.jpg';    // image file in this repo; '' = built-in Earth
+const BG_POSITION  = 'center';            // e.g. 'center', 'center top', 'left center'
+const OVERLAY      = 0.55;                // 0 = raw image, 1 = fully dark (keeps text readable)
+/* ================================================== */
+const N = 4, ROW = 76, qs = new URLSearchParams(location.search), HOST = qs.get('host');
+const DEMO = API.startsWith('PASTE') || qs.has('demo');
 const board = document.getElementById('board'), els = new Map();
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
-let leader = null;
+let leader = null, lastTeams = [], state = { start: 0, end: 0 }, offset = 0, wasRunning = false;
+
+document.getElementById('title').textContent = TITLE; document.title = TITLE;
+document.documentElement.style.setProperty('--ov', OVERLAY);
+(function () {
+  const bg = document.getElementById('bg'), earth = document.getElementById('earth');
+  if (!BACKGROUND) { earth.hidden = false; return; }
+  const img = new Image();
+  img.onload = () => { bg.style.backgroundImage = 'url("' + BACKGROUND + '")'; bg.style.backgroundPosition = BG_POSITION; };
+  img.onerror = () => { earth.hidden = false; };
+  img.src = BACKGROUND;
+})();
 
 function aggregate(list) {
   const t = {};
@@ -82,9 +118,9 @@ function countUp(el, to) {
   const t0 = performance.now();
   (function f(t) { const k = Math.min(1, (t - t0) / 700); el.textContent = Math.round(from + (to - from) * k); if (k < 1) requestAnimationFrame(f); })(t0);
 }
-function celebrate(name) {
-  const b = document.getElementById('banner'); b.textContent = 'New leader: ' + name; b.classList.add('show');
-  setTimeout(() => b.classList.remove('show'), 3500);
+function celebrate(text, ms) {
+  const b = document.getElementById('banner'); b.textContent = text; b.classList.add('show');
+  setTimeout(() => b.classList.remove('show'), ms || 3500);
   if (reduce) return;
   for (let i = 0; i < 50; i++) {
     const d = document.createElement('span'); d.className = 'dot';
@@ -94,6 +130,7 @@ function celebrate(name) {
   }
 }
 function render(teams) {
+  lastTeams = teams;
   document.getElementById('empty').hidden = teams.length > 0;
   board.style.height = teams.length * ROW + 'px';
   const seen = new Set();
@@ -108,24 +145,68 @@ function render(teams) {
   });
   for (const [k, el] of els) if (!seen.has(k)) { el.remove(); els.delete(k); }
   const top = teams[0] && teams[0].total > 0 ? teams[0].team : null;
-  if (top && top !== leader) { if (leader !== null) celebrate(top); leader = top; }
+  if (top && top !== leader) { if (leader !== null) celebrate('New leader: ' + top); leader = top; }
 }
 function stamp(msg) { document.getElementById('status').textContent = msg + ' ' + new Date().toLocaleTimeString(); }
 
+/* ---- countdown ---- */
+function tick() {
+  const clock = document.getElementById('clock'), time = document.getElementById('time'), label = document.getElementById('tlabel');
+  if (!state.start) { time.textContent = '--:--'; label.textContent = 'Waiting for the host'; clock.className = 'clock'; return; }
+  const rem = state.end - (Date.now() + offset);
+  if (rem > 0) {
+    wasRunning = true;
+    const s = Math.ceil(rem / 1000), m = Math.floor(s / 60);
+    time.textContent = String(m).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
+    label.textContent = 'Time remaining';
+    clock.className = 'clock' + (rem <= 60000 ? ' crit' : rem <= 300000 ? ' warn' : '');
+  } else {
+    time.textContent = '00:00'; label.textContent = 'Final scores'; clock.className = 'clock over';
+    if (wasRunning) { wasRunning = false; const w = lastTeams[0];
+      celebrate(w && w.total > 0 ? 'Time is up! Winner: ' + w.team : 'Time is up!', 9000); }
+  }
+}
+setInterval(tick, 250);
+
+/* ---- host controls: open  ?host=SECRET  to start,  ?host=SECRET&reset=1  to reset ---- */
+async function api(params) {
+  const q = new URLSearchParams(params); q.set('t', Date.now());
+  return (await (await fetch(API + '?' + q, { cache: 'no-store' })).text()).trim();
+}
+async function hostBoot() {
+  if (!HOST || DEMO) return;
+  const el = document.getElementById('hostmsg'), reset = qs.get('reset');
+  try {
+    const r = reset ? await api({ action: 'reset', key: HOST }) : await api({ action: 'start', key: HOST, minutes: DURATION_MIN });
+    if (r === 'DENIED') el.textContent = 'Host key rejected. Check ?host= matches SECRET in Code.gs.';
+    else {
+      el.textContent = reset ? (r === 'OK' ? 'Event reset: scores and timer cleared. Open the host link without reset to start.' : 'Reset: ' + r)
+        : (r === 'OK' ? 'Timer started: ' + DURATION_MIN + ' minutes.' : r === 'ALREADY' ? 'A timer already exists. Reset first to start a new one.' : 'Start: ' + r);
+      history.replaceState(null, '', location.pathname);   // removes the key from the address bar
+      setTimeout(() => { el.textContent = ''; }, 10000);
+    }
+  } catch (e) { el.textContent = 'Could not reach the server.'; }
+}
+
 if (DEMO) {
+  state.start = Date.now(); state.end = state.start + DURATION_MIN * 60000;
   const names = ['Team Orion', 'Team Artemis', 'Team Nova', 'Team Lunar', 'Team Apollo'], log = [];
   setInterval(() => {
+    if (Date.now() > state.end) return;
     log.push({ team: names[Math.floor(Math.random() * names.length)], patient: 1 + Math.floor(Math.random() * N), score: 40 + Math.floor(Math.random() * 61) });
     render(aggregate(log)); stamp('Demo mode with fake scores, updated');
   }, 1800);
 } else {
   async function poll() {
     try {
-      const r = await fetch(API + '?t=' + Date.now(), { cache: 'no-store' });
-      render(aggregate(await r.json())); stamp('Live, updated');
+      const j = await (await fetch(API + '?t=' + Date.now(), { cache: 'no-store' })).json();
+      const rows = Array.isArray(j) ? j : (j.rows || []);
+      if (j.now) offset = j.now - Date.now();
+      state.start = j.start || 0; state.end = j.end || 0;
+      render(aggregate(rows)); stamp('Live, updated');
     } catch (e) { stamp('Connection lost, retrying. Last try'); }
   }
-  poll(); setInterval(poll, 3000);
+  hostBoot().then(() => { poll(); setInterval(poll, 3000); });
 }
 </script>
 </body>
