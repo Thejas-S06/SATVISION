@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Image Doctor: Recovery Board</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#060912;--line:#1f2a45;--text:#e9ecf5;--dim:#8d98b5;--earth:#3d7bff;--sun:#ffb347;--ok:#4fd8a8}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--text);font-family:Sora,system-ui,sans-serif;min-height:100vh;overflow-x:hidden;
+  padding:max(24px,env(safe-area-inset-top)) clamp(16px,4vw,56px) 40px}
+.earth{position:fixed;right:-18vmin;bottom:-30vmin;width:60vmin;height:60vmin;border-radius:50%;z-index:0;
+  background:radial-gradient(circle at 30% 30%,#7fb0ff,#2f5fd0 45%,#0b1f55 75%);box-shadow:0 0 90px 10px #3d7bff44;animation:rise 4s ease-out both}
+@keyframes rise{from{transform:translateY(45vmin)}to{transform:none}}
+main{position:relative;z-index:1;max-width:980px}
+h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:-.02em}
+.sub{color:var(--dim);margin:8px 0 6px;max-width:60ch;line-height:1.5}
+#status{font-size:13px;color:var(--dim);margin-bottom:24px}
+.board{position:relative}
+.row{position:absolute;left:0;right:0;height:64px;display:grid;grid-template-columns:44px minmax(90px,1.2fr) 4fr 84px;align-items:center;gap:14px;
+  padding:0 16px;background:rgba(14,20,36,.88);border:1px solid var(--line);border-radius:10px;
+  transition:transform .8s cubic-bezier(.2,.8,.2,1),border-color .4s,box-shadow .4s}
+.row.lead{border-color:var(--sun);box-shadow:0 0 26px #ffb34740}
+.rank{font-size:22px;font-weight:800;color:var(--dim)}.lead .rank{color:var(--sun)}
+.name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pts{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
+.pt{height:26px;background:#141c33;border-radius:5px;position:relative;overflow:hidden}
+.pt i{position:absolute;inset:0 auto 0 0;width:0;background:var(--earth);transition:width .8s}
+.pt.done i{background:var(--ok)}
+.pt b{position:absolute;left:7px;top:50%;transform:translateY(-50%);font-size:11px;font-weight:600;color:#fff;text-shadow:0 0 4px #000}
+.total{text-align:right;font-size:24px;font-weight:800;font-variant-numeric:tabular-nums}
+.empty{color:var(--dim);padding:24px 0}
+.banner{position:fixed;top:16px;left:50%;transform:translate(-50%,-140px);background:var(--sun);color:#1a1200;font-weight:800;
+  padding:12px 24px;border-radius:999px;z-index:5;transition:transform .5s cubic-bezier(.2,.8,.2,1)}
+.banner.show{transform:translate(-50%,0)}
+.dot{position:fixed;top:-14px;width:8px;height:12px;z-index:4;animation:fall 2.4s ease-in forwards}
+@keyframes fall{to{transform:translate(var(--dx),108vh) rotate(720deg)}}
+@media(max-width:640px){.row{grid-template-columns:30px 1fr 64px}.pts{display:none}}
+@media(prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="earth" aria-hidden="true"></div>
+<div class="banner" id="banner"></div>
+<main>
+  <h1>Image Doctor: recovery board</h1>
+  <p class="sub">Four damaged space photos, one score per patient out of 100. Teams are ranked by their best score on each patient, added together (400 max).</p>
+  <div id="status">Connecting…</div>
+  <div class="board" id="board"></div>
+  <div class="empty" id="empty" hidden>No scores yet. Fix a patient image, then run submitScore to appear here.</div>
+</main>
+<script>
+const API = 'PASTE_YOUR_WEB_APP_URL_HERE';   // Apps Script web app URL (ends in /exec)
+const N = 4, ROW = 76, DEMO = API.startsWith('PASTE') || location.search.includes('demo');
+const board = document.getElementById('board'), els = new Map();
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let leader = null;
+
+function aggregate(list) {
+  const t = {};
+  for (const r of list) {
+    const p = Number(r.patient), s = Number(r.score), team = String(r.team);
+    if (!(p >= 1 && p <= N) || isNaN(s)) continue;
+    t[team] ??= { team, best: Array(N).fill(0) };
+    t[team].best[p - 1] = Math.max(t[team].best[p - 1], s);
+  }
+  return Object.values(t).map(x => ({ ...x, total: x.best.reduce((a, b) => a + b, 0) }))
+    .sort((a, b) => b.total - a.total || a.team.localeCompare(b.team));
+}
+function makeRow(team) {
+  const el = document.createElement('div'); el.className = 'row';
+  el.innerHTML = '<div class="rank"></div><div class="name"></div><div class="pts">' +
+    [1,2,3,4].map(i => '<div class="pt"><i></i><b>P' + i + '</b></div>').join('') + '</div><div class="total">0</div>';
+  el.querySelector('.name').textContent = team;
+  board.appendChild(el); el.style.transform = 'translateY(' + els.size * ROW + 'px)';
+  return el;
+}
+function countUp(el, to) {
+  const from = el._v || 0; el._v = to; if (from === to || reduce) { el.textContent = to; return; }
+  const t0 = performance.now();
+  (function f(t) { const k = Math.min(1, (t - t0) / 700); el.textContent = Math.round(from + (to - from) * k); if (k < 1) requestAnimationFrame(f); })(t0);
+}
+function celebrate(name) {
+  const b = document.getElementById('banner'); b.textContent = 'New leader: ' + name; b.classList.add('show');
+  setTimeout(() => b.classList.remove('show'), 3500);
+  if (reduce) return;
+  for (let i = 0; i < 50; i++) {
+    const d = document.createElement('span'); d.className = 'dot';
+    d.style.left = Math.random() * 100 + 'vw'; d.style.setProperty('--dx', (Math.random() * 200 - 100) + 'px');
+    d.style.background = ['#ffb347', '#3d7bff', '#4fd8a8', '#e9ecf5'][i % 4]; d.style.animationDelay = Math.random() * .5 + 's';
+    document.body.appendChild(d); setTimeout(() => d.remove(), 3200);
+  }
+}
+function render(teams) {
+  document.getElementById('empty').hidden = teams.length > 0;
+  board.style.height = teams.length * ROW + 'px';
+  const seen = new Set();
+  teams.forEach((t, i) => {
+    seen.add(t.team);
+    let el = els.get(t.team); if (!el) { el = makeRow(t.team); els.set(t.team, el); }
+    el.style.transform = 'translateY(' + i * ROW + 'px)';
+    el.classList.toggle('lead', i === 0 && t.total > 0);
+    el.querySelector('.rank').textContent = i + 1;
+    el.querySelectorAll('.pt').forEach((pt, k) => { pt.classList.toggle('done', t.best[k] >= 80); pt.firstChild.style.width = t.best[k] + '%'; pt.querySelector('b').textContent = 'P' + (k + 1) + (t.best[k] ? ' ' + t.best[k] : ''); });
+    countUp(el.querySelector('.total'), t.total);
+  });
+  for (const [k, el] of els) if (!seen.has(k)) { el.remove(); els.delete(k); }
+  const top = teams[0] && teams[0].total > 0 ? teams[0].team : null;
+  if (top && top !== leader) { if (leader !== null) celebrate(top); leader = top; }
+}
+function stamp(msg) { document.getElementById('status').textContent = msg + ' ' + new Date().toLocaleTimeString(); }
+
+if (DEMO) {
+  const names = ['Team Orion', 'Team Artemis', 'Team Nova', 'Team Lunar', 'Team Apollo'], log = [];
+  setInterval(() => {
+    log.push({ team: names[Math.floor(Math.random() * names.length)], patient: 1 + Math.floor(Math.random() * N), score: 40 + Math.floor(Math.random() * 61) });
+    render(aggregate(log)); stamp('Demo mode with fake scores, updated');
+  }, 1800);
+} else {
+  async function poll() {
+    try {
+      const r = await fetch(API + '?t=' + Date.now(), { cache: 'no-store' });
+      render(aggregate(await r.json())); stamp('Live, updated');
+    } catch (e) { stamp('Connection lost, retrying. Last try'); }
+  }
+  poll(); setInterval(poll, 3000);
+}
+</script>
+</body>
+</html>
