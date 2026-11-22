@@ -52,7 +52,7 @@ h1{font-size:clamp(28px,5vw,52px);font-weight:800;letter-spacing:-.02em}
   <div class="empty" id="empty" hidden>No scores yet. Fix a patient image, then run submitScore to appear here.</div>
 </main>
 <script>
-const API = 'PASTE_YOUR_WEB_APP_URL_HERE';   // Apps Script web app URL (ends in /exec)
+const API = 'https://script.google.com/macros/s/AKfycbwieNmto7ygBAsCiUxy28bgUJXK2uIYB1fKruyBGpx9KcyKbmfKRy2qK1IO_cN6aIpNVA/exec';   // Apps Script web app URL (ends in /exec)
 const N = 4, ROW = 76, DEMO = API.startsWith('PASTE') || location.search.includes('demo');
 const board = document.getElementById('board'), els = new Map();
 const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
